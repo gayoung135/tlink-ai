@@ -15,6 +15,8 @@ import streamlit as st
 BASE = Path(__file__).parent
 HEAD_LIMIT, SUB_LIMIT = 20, 45
 MAX_PHOTOS = 5
+EXAMPLE_PATH = Path(__file__).parent / "samples" / "example_result.json"
+EXAMPLE_MEMO = "외근 영업사원 10명 회사. 휴대폰과 사무실 인터넷전화 통화를 따로 관리해서 고객 이력이 흩어져 있음"
 SAMPLE_LABELS = {  # 파일명은 영문(윈도우 압축 해제 시 한글 깨짐 방지), 화면에는 한글로 표시
     "01_dashboard": "경영 대시보드",
     "02_consult": "상담 관리 화면",
@@ -159,7 +161,22 @@ def shrink(data, mime, max_side=1280):
         return data, mime
 
 
-def call_gemini(api_key, model, images, prompt):
+def call_gemini(api_key, model, images, prompt, retries=2):
+    """서버 혼잡(503)·사용량 초과(429)는 잠시 기다렸다 다시 시도."""
+    import time
+    waits = [8, 20]
+    for attempt in range(retries + 1):
+        try:
+            return _call_gemini(api_key, model, images, prompt)
+        except Exception as e:
+            msg = str(e)
+            busy = any(k in msg for k in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED"))
+            if not busy or attempt == retries:
+                raise
+            time.sleep(waits[min(attempt, len(waits) - 1)])
+
+
+def _call_gemini(api_key, model, images, prompt):
     from google import genai
     from google.genai import types
 
@@ -418,6 +435,9 @@ def main():
         step_header(3, "콘텐츠 만들기", f"'{g['제품명']}' 가이드라인과 제품 자료 {len(facts)}건만 근거로 씁니다. 약 2~3분 걸립니다.")
         run = st.button("콘텐츠 만들기", type="primary", use_container_width=True,
                         disabled=not (images and api_key) or bool(key_problem))
+        show_example = EXAMPLE_PATH.exists() and st.button(
+            "기다리지 않고 예시 결과 먼저 보기", use_container_width=True,
+            help="샘플 사진 5장으로 미리 만들어 둔 실제 생성 결과를 바로 보여 줍니다.")
         if not images:
             html('<p class="hint">1단계에서 사진을 먼저 선택하세요.</p>')
         elif key_problem:
@@ -425,17 +445,26 @@ def main():
         elif not api_key:
             html('<p class="alert">API 키가 설정되지 않았습니다. 페이지 아래 고급 설정에서 입력하세요.</p>')
 
+    if show_example:
+        files = sorted((BASE / "samples").glob("*.jpg"))
+        st.session_state["out"] = {
+            "result": json.loads(EXAMPLE_PATH.read_text(encoding="utf-8")),
+            "names": [SAMPLE_LABELS.get(p.stem, p.stem) for p in files],
+            "images": [(p.read_bytes(), "image/jpeg") for p in files],
+            "memo": EXAMPLE_MEMO, "mode": "brand", "sec": "-", "example": True}
+
     if run:
         t0 = time.time()
         with st.spinner("사진을 분석하고 원고를 쓰는 중입니다. 화면을 닫지 말고 기다려 주세요."):
             try:
                 result = call_gemini(api_key, model, images, build_prompt(g, facts, memo, len(images), mode))
                 st.session_state["out"] = {"result": result, "names": names, "images": images, "memo": memo,
-                                           "mode": mode, "sec": round(time.time() - t0)}
+                                           "mode": mode, "sec": round(time.time() - t0), "example": False}
             except Exception as e:
                 msg = str(e)
-                if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
-                    st.error("사용량이 잠시 초과되었습니다. 1분 뒤 다시 시도해 주세요.")
+                if any(k in msg for k in ("429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE")):
+                    st.error("AI 서버가 일시적으로 붐벼 세 번 시도했지만 실패했습니다. 1~2분 뒤 다시 누르거나, "
+                             "'예시 결과 먼저 보기'로 결과 화면을 확인해 주세요.")
                 elif "404" in msg or "NOT_FOUND" in msg:
                     st.error("모델 이름을 찾을 수 없습니다. 고급 설정의 모델 이름을 확인해 주세요.")
                 else:
@@ -471,6 +500,7 @@ def revise(out, g, facts, failed, api_key, model):
     import time
     t0 = time.time()
     with st.spinner("점검에서 걸린 항목만 고쳐 다시 쓰는 중입니다. 약 1~2분 걸립니다."):
+        out["example"] = False
         try:
             new = call_gemini(api_key, model, [], build_revision_prompt(g, facts, out["result"], failed, out.get("mode", "brand")))
         except Exception as e:
@@ -500,7 +530,10 @@ def render_result(out, g, facts, api_key="", model=""):
          f'<div class="kpi"><span>점검 통과</span><b>{passed} / {len(checks)}</b></div>'
          f'<div class="kpi"><span>블로그 본문</span><b>{len(plain(blog_text(b))):,}자</b></div>'
          f'<div class="kpi"><span>채워야 할 곳</span><b>{ph}곳</b></div>'
-         f'<div class="kpi"><span>걸린 시간</span><b>{out.get("sec", "-")}초</b></div></div>')
+         + (f'<div class="kpi"><span>걸린 시간</span><b>저장본</b></div></div>' if out.get("example")
+          else f'<div class="kpi"><span>걸린 시간</span><b>{out.get("sec", "-")}초</b></div></div>'))
+    if out.get("example"):
+        html('<div class="notice">저장된 예시 결과입니다. 샘플 사진 5장과 메모 "외근 영업사원 10명 회사…"로 실제 생성한 결과를 그대로 불러왔습니다.</div>')
     if failed:
         html(f'<div class="notice">게시 전에 확인할 항목이 {len(failed)}개 있습니다. '
              f'<b>점검 결과</b> 탭에서 내용을 확인하거나, 아래 버튼으로 해당 항목만 고쳐 다시 쓸 수 있습니다.</div>')
