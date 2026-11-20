@@ -53,7 +53,7 @@ DISCLOSURE = "※ 이 포스팅은 ㈜티링크앤주인닷컴으로부터 [제�
 def mode_rule(mode):
     if mode == "review":
         return """작성 방식: 체험단 리뷰어가 직접 사용한 뒤 완성할 '리뷰 초안'이다.
-- 1인칭 후기 문장은 쓰되, 리뷰어가 실제로 겪은 일(회사 규모, 기간, 통화 결과, 소감)은 지어내지 말고 "[직접 사용 후 작성: 무엇을 쓸지 안내]" 자리로 남겨.
+- 1인칭 후기 문장은 쓰되, 리뷰어가 실제로 겪은 일(회사 규모, 기간, 통화 결과, 소감, "실제로 해 보니" 같은 사용 경험)은 한 문장도 지어내지 말고 "[직접 사용 후 작성: 무엇을 쓸지 안내]" 자리로 남겨.
 - 제품 기능 설명 부분만 완성된 문장으로 써."""
     return """작성 방식: 티링크 공식 블로그에 올리는 '도입 사례·기능 소개' 글이다.
 - 가상의 사용자나 회사를 1인칭으로 지어내지 마. "이런 회사라면", "외근 영업팀은" 처럼 3인칭으로 써.
@@ -76,7 +76,7 @@ def build_prompt(g, facts, memo, n_photos, mode="brand"):
 [리뷰 가이드라인]
 - 홍보 제품: {g['제품명']}
 - 리뷰 컨셉: {g['리뷰컨셉']}
-- 필수 키워드(제목과 본문에 반드시 포함): {', '.join(g['필수키워드'])}
+- 필수 키워드(제목에 1회, 본문 소제목 글에도 각각 1회 이상 반드시 포함): {', '.join(g['필수키워드'])}
 - 제목과 첫 문단에 넣을 키워드: {', '.join(g['제목_첫문단_키워드'])}
 - 서브 키워드(자연스럽게): {', '.join(g['서브키워드'])}
 - 허용 태그: {' '.join(g['태그'])}
@@ -90,6 +90,7 @@ def build_prompt(g, facts, memo, n_photos, mode="brand"):
 {conflicts}
 
 규칙:
+0. 자료에 없는 효과를 부풀리지 마. "입증", "보장", "차단", "철저" 같은 단정 표현 대신 자료 문장 그대로의 기능 설명을 써.
 1. 제품 정보에 없는 기능·수치·가격·고객사·인증은 절대 만들지 마. 필요한 자리에는 "[확인 필요]"라고 써.
 2. 제품 기능을 말하는 문장마다 근거 ID를 fact_ids에 적어. 근거가 없으면 그 문장을 쓰지 마.
 3. 숫자는 제품 정보와 현장 메모에 있는 숫자만 써. 사진(제품 화면) 속 건수·퍼센트·시간은 예시 데이터이므로 실제 성과처럼 쓰지 마. 가격을 쓰면 조건(상담원 1인 기준, 설정비, VAT 별도, 상담 후 확정)을 빠짐없이 함께 써.
@@ -118,6 +119,29 @@ def build_prompt(g, facts, memo, n_photos, mode="brand"):
   "instagram_hashtags": ["#..."],
   "privacy_risks": []
 }}"""
+
+
+def build_revision_prompt(g, facts, result, failed, mode):
+    issues = "\n".join(f"- {c['label']}: {c['detail']}" for c in failed)
+    return f"""아래 [기존 결과]는 자동 점검에서 다음 문제가 발견됐어.
+[발견된 문제]
+{issues}
+
+[제품 정보]
+{facts_block(facts)}
+
+{mode_rule(mode)}
+
+할 일:
+1. 위 문제만 고치고, 나머지 내용·구성·사진 배치(photos, photo_index)는 최대한 그대로 둬.
+2. 사용 금지 단어: {', '.join(g['사용금지'])} — 모든 필드에서 빼고 자연스러운 표현으로 바꿔.
+3. 필수 키워드 {', '.join(g['필수키워드'])}는 제목과 본문에 모두 들어가야 해.
+4. 숫자는 제품 정보와 현장 메모에 있는 것만. 근거 ID는 본문에 쓰지 말고 fact_ids에만.
+5. 해시태그는 다음 목록에서만: {' '.join(g['태그'])}
+6. [기존 결과]와 똑같은 JSON 형식으로만 답해.
+
+[기존 결과]
+{json.dumps(result, ensure_ascii=False)}"""
 
 
 def shrink(data, mime, max_side=1280):
@@ -418,7 +442,7 @@ def main():
                     st.error(f"만들기에 실패했습니다: {msg}")
 
     if st.session_state.get("out"):
-        render_result(st.session_state["out"], g, facts)
+        render_result(st.session_state["out"], g, facts, api_key, model)
 
     # ---- 하단
     html('<div class="sec">더 보기</div>')
@@ -443,7 +467,24 @@ def main():
     html(f'<div class="copyright">{esc(COPYRIGHT)}<br>제품 정보 출처: ㈜티링크앤주인닷컴 제공 자료 · AI 생성 결과는 게시 전 담당자 검토가 필요합니다.</div>')
 
 
-def render_result(out, g, facts):
+def revise(out, g, facts, failed, api_key, model):
+    import time
+    t0 = time.time()
+    with st.spinner("점검에서 걸린 항목만 고쳐 다시 쓰는 중입니다. 약 1~2분 걸립니다."):
+        try:
+            new = call_gemini(api_key, model, [], build_revision_prompt(g, facts, out["result"], failed, out.get("mode", "brand")))
+        except Exception as e:
+            st.error(f"다시 쓰기에 실패했습니다: {e}")
+            return
+    before = sum(c["ok"] for c in audit(out["result"], g, facts, out.get("memo", "")))
+    out["history"] = out.get("history", []) + [before]
+    out["result"] = new
+    out["sec"] = round(time.time() - t0)
+    st.session_state["out"] = out
+    st.rerun()
+
+
+def render_result(out, g, facts, api_key="", model=""):
     result, names, images, mode = out["result"], out["names"], out["images"], out.get("mode", "brand")
     checks = audit(result, g, facts, out.get("memo", ""))
     fmap = {f["id"]: f for f in facts}
@@ -453,7 +494,8 @@ def render_result(out, g, facts):
     raw = json.dumps(result, ensure_ascii=False)
     ph = raw.count("[확인 필요]") + raw.count("[직접 사용 후 작성")
 
-    html('<div class="sec">결과</div>')
+    hist = out.get("history", [])
+    html('<div class="sec">결과' + (f' · 다시 쓰기 {len(hist)}회 (점검 통과 {" → ".join(map(str, hist + [passed]))})' if hist else "") + '</div>')
     html('<div class="kpis">'
          f'<div class="kpi"><span>점검 통과</span><b>{passed} / {len(checks)}</b></div>'
          f'<div class="kpi"><span>블로그 본문</span><b>{len(plain(blog_text(b))):,}자</b></div>'
@@ -461,7 +503,10 @@ def render_result(out, g, facts):
          f'<div class="kpi"><span>걸린 시간</span><b>{out.get("sec", "-")}초</b></div></div>')
     if failed:
         html(f'<div class="notice">게시 전에 확인할 항목이 {len(failed)}개 있습니다. '
-             f'<b>점검 결과</b> 탭에서 내용을 확인하세요.</div>')
+             f'<b>점검 결과</b> 탭에서 내용을 확인하거나, 아래 버튼으로 해당 항목만 고쳐 다시 쓸 수 있습니다.</div>')
+        if st.button(f"확인 필요 {len(failed)}개 항목 고쳐서 다시 쓰기", use_container_width=True,
+                     disabled=not api_key):
+            revise(out, g, facts, failed, api_key, model)
 
     t1, t2, t3, t4, t5 = st.tabs(["블로그 글", "인스타그램", "점검 결과", "사진 분석 · 근거", "복사 · 내려받기"])
     caps = {p.get("index"): p.get("caption", "") for p in result.get("photos", [])}
@@ -491,6 +536,7 @@ def render_result(out, g, facts):
         st.write(result.get("instagram_caption", ""))
         st.caption(" ".join(result.get("instagram_hashtags", [])))
     with t3:
+        html('<p class="hint">숫자·키워드·금지어·근거는 코드가 자동 점검합니다. 문장의 사실 여부와 어색한 표현은 게시 전에 담당자가 한 번 더 읽어 주세요.</p>')
         render_checks(checks)
         for r in result.get("privacy_risks", []):
             html(f'<div class="chk"><span class="tag ng">개인정보</span><div>{esc(r)}</div></div>')
