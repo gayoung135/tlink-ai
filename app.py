@@ -290,9 +290,16 @@ def main():
 
     # ---- 고급 설정 값 (맨 아래 펼침 메뉴에서 바꿈)
     api_key = get_secret("GEMINI_API_KEY") or st.session_state.get("api_key_input", "")
-    model = st.session_state.get("model_input") or get_secret("GEMINI_MODEL") or "gemini-2.5-flash"
+    model = st.session_state.get("model_input") or get_secret("GEMINI_MODEL") or "gemini-3.8-flash"
     g = st.session_state.get("guideline") or default_guideline()
     facts = st.session_state.get("facts") or default_facts()
+
+    api_key, model = (api_key or "").strip(), (model or "").strip()
+    key_problem = ""
+    if api_key and not api_key.isascii():
+        key_problem = "API 키에 한글 등 영문이 아닌 글자가 들어 있습니다. Secrets의 GEMINI_API_KEY 값을 AI Studio에서 복사한 키로 바꿔 주세요."
+    elif api_key and not api_key.startswith("AIza"):
+        key_problem = "API 키 형식이 올바르지 않습니다. AI Studio에서 발급한 키(AIza로 시작)를 넣어 주세요."
 
     # ---- STEP 1
     with st.container(border=True):
@@ -325,9 +332,11 @@ def main():
     with st.container(border=True):
         step_header(3, "콘텐츠 생성", f"'{g['제품명']}' 리뷰 가이드라인과 제품 자료 {len(facts)}건만 근거로 작성합니다. 30초~1분 정도 걸립니다.")
         run = st.button("블로그·인스타그램 콘텐츠 생성하기", type="primary", use_container_width=True,
-                        disabled=not (images and api_key))
+                        disabled=not (images and api_key) or bool(key_problem))
         if not images:
             st.markdown('<p class="note">STEP 1에서 사진을 먼저 선택하세요.</p>', unsafe_allow_html=True)
+        elif key_problem:
+            st.markdown(f'<p class="warn">{esc(key_problem)}</p>', unsafe_allow_html=True)
         elif not api_key:
             st.markdown('<p class="warn">API 키가 설정되지 않았습니다. 페이지 아래 고급 설정에서 입력하세요.</p>',
                         unsafe_allow_html=True)
