@@ -219,8 +219,9 @@ CSS = f"""
 html, body, [class*="css"], .stMarkdown, button, input, textarea {{
   font-family: 'Pretendard', -apple-system, 'Malgun Gothic', sans-serif !important;
 }}
-[data-testid="stToolbar"], [data-testid="stDecoration"], footer {{ display: none !important; }}
-.block-container {{ max-width: 1080px; padding-top: 2.2rem; padding-bottom: 4rem; }}
+[data-testid="stToolbar"], [data-testid="stDecoration"], [data-testid="stHeader"], footer {{ display: none !important; }}
+.block-container {{ max-width: 1080px; padding-top: 3rem !important; padding-bottom: 4rem; }}
+.brandbar {{ line-height: 1.6; padding-top: 2px; }}
 .brandbar {{ display:flex; align-items:center; gap:10px; font-size:13px; color:#6B7280; letter-spacing:.02em; }}
 .brandbar b {{ color:{BRAND}; font-size:15px; letter-spacing:.06em; }}
 .hero h1 {{ font-size:30px; font-weight:800; margin:.4rem 0 .3rem; color:#0F172A; letter-spacing:-.02em; }}
