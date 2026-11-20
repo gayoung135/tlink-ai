@@ -1,8 +1,10 @@
-"""티링크 AI 현장사진 홍보콘텐츠 자동생성기 (MVP)
-현장 사진 + 제품 정보 시트(products.csv) → 사진 분석 → 차별점 매칭 → 블로그·인스타 초안 + 검수 체크리스트
+"""티링크 AI 현장사진 홍보콘텐츠 자동생성기
+현장 사진 + 제품 정보(facts.csv) + 업체 리뷰 가이드라인(guideline.json)
+→ 사진 분석 → 기술 차별점 매칭 → 가이드라인 맞춤 블로그·인스타 콘텐츠 → 코드 자동 검수
 실행: streamlit run app.py
 """
 import csv
+import io
 import json
 import os
 import re
@@ -10,195 +12,330 @@ from pathlib import Path
 
 import streamlit as st
 
-PLACEHOLDER = "[확인 필요]"
-HEAD_LIMIT, SUB_LIMIT, TITLE_LIMIT = 20, 45, 30
-SHEET_PATH = Path(__file__).with_name("products.csv")
+BASE = Path(__file__).parent
+HEAD_LIMIT, SUB_LIMIT = 20, 45
+MAX_PHOTOS = 5
 
 
-# ---------- 제품 정보 시트 ----------
-def load_products(path=SHEET_PATH):
-    with open(path, encoding="utf-8-sig") as f:
-        return [row for row in csv.DictReader(f)]
+# ---------------------------------------------------------------- 데이터
+def read_facts(text):
+    rows = list(csv.DictReader(io.StringIO(text)))
+    return [{"id": f"F{i}", **r} for i, r in enumerate(rows, 1)]
 
 
-def sheet_text(rows):
-    """AI에 넘길 근거 원문. 한 줄 = 한 사실."""
-    lines = []
-    for r in rows:
-        for key in ("특허", "차별점", "설치환경", "추가정보"):
-            val = (r.get(key) or "").strip()
-            if val:
-                lines.append(f"[{r['제품명']}] {key}: {val}")
-    return "\n".join(lines)
+def default_facts():
+    return read_facts((BASE / "facts.csv").read_text(encoding="utf-8-sig"))
 
 
-# ---------- 코드 레벨 검증 (AI 결과를 그대로 믿지 않음) ----------
-def normalize(s):
-    return re.sub(r"\s+", "", s or "")
+def default_guideline():
+    return json.loads((BASE / "guideline.json").read_text(encoding="utf-8"))
 
 
-def check_evidence(points, source):
-    """AI가 댄 근거 문장이 시트 원문에 실제로 있는지 확인."""
-    src = normalize(source)
-    for p in points:
-        ev = normalize(p.get("evidence", ""))
-        p["verified"] = bool(ev) and ev in src
-    return points
+def facts_block(facts):
+    return "\n".join(f"[{f['id']}] ({f['제품']}) {f['사실']}  — 출처: {f['출처']}" for f in facts)
 
 
-def check_lengths(slides, title):
-    issues = []
-    for i, s in enumerate(slides, 1):
-        h, sub = s.get("headline", ""), s.get("sub", "")
-        if len(h) > HEAD_LIMIT:
-            issues.append(f"{i}장 헤드카피 {len(h)}자 (≤{HEAD_LIMIT})")
-        if len(sub) > SUB_LIMIT:
-            issues.append(f"{i}장 서브카피 {len(sub)}자 (≤{SUB_LIMIT})")
-    if len(title) > TITLE_LIMIT:
-        issues.append(f"블로그 제목 {len(title)}자 (≤{TITLE_LIMIT})")
-    return issues
+# ---------------------------------------------------------------- 프롬프트
+def build_prompt(g, facts, memo, n_photos):
+    conflicts = "\n".join(f"- {c['내용']}: {c['이유']}" for c in g.get("확인필요_충돌", [])) or "- 없음"
+    missions = "\n".join(f"{i}. {m}" for i, m in enumerate(g["미션"], 1))
+    return f"""너는 '{g['업체명']}'에 입사한 10년 차 B2B 콘텐츠 마케터야.
+첨부한 현장 사진 {n_photos}장과 아래 [제품 정보], [리뷰 가이드라인]만 근거로 네이버 블로그 리뷰와 인스타그램 카드뉴스를 만들어.
 
+[현장 메모] {memo or '없음'}
 
-def build_prompt(products, source, memo):
-    return f"""너는 정보통신 업체 '티링크'의 팩트 기반 B2B 마케터야.
-첨부한 현장 사진과 아래 [제품 정보 시트]만 근거로 홍보 콘텐츠 초안을 만들어.
+[제품 정보] (각 줄 앞의 [F번호]가 근거 ID)
+{facts_block(facts)}
 
-[설치 제품] {", ".join(products)}
-[현장 메모] {memo or "없음"}
+[리뷰 가이드라인]
+- 홍보 제품: {g['제품명']}
+- 리뷰 컨셉: {g['리뷰컨셉']}
+- 필수 키워드(제목과 본문에 반드시 포함): {', '.join(g['필수키워드'])}
+- 제목과 첫 문단에 넣을 키워드: {', '.join(g['제목_첫문단_키워드'])}
+- 서브 키워드(자연스럽게): {', '.join(g['서브키워드'])}
+- 추천 본문 구성(이 순서로 소제목): {' → '.join(g['추천구성'])}
+- 리뷰 미션:
+{missions}
 
-[제품 정보 시트]
-{source}
+[사용 금지]
+- 단어: {', '.join(g['사용금지'])}
+- 업체 확인 전 사용 금지 정보:
+{conflicts}
 
 규칙:
-1. 시트에 없는 성능·수치·인증·고객사명·가격은 절대 만들지 말고 "{PLACEHOLDER}"로 표기.
-2. 차별점(points)의 evidence에는 시트 문장을 한 글자도 바꾸지 말고 그대로 복사.
-3. 사진에서 사람 얼굴, 상호·간판, 전화번호, 문서 글씨가 보이면 privacy_risks에 적어.
-4. 최고·최초·유일·1위 같은 근거 없는 최상급 표현 금지.
-5. 인스타 카드: 정확히 5장, headline {HEAD_LIMIT}자 이내, sub {SUB_LIMIT}자 이내 (공백 포함).
-6. 블로그 제목 {TITLE_LIMIT}자 이내, 본문은 ### 소제목 3개 이상, 600~1000자.
+1. 제품 정보에 없는 기능·수치·가격·고객사·인증은 절대 만들지 마. 필요한 자리에는 "[확인 필요]"라고 써.
+2. 제품 기능을 말하는 문장마다 근거 ID를 fact_ids에 적어. 근거가 없으면 그 문장을 쓰지 마.
+3. 숫자는 제품 정보에 있는 숫자만 써. 가격을 쓰면 조건(상담원 1인 기준, 설정비, VAT 별도, 상담 후 확정)을 빠짐없이 함께 써.
+4. 사진마다 무슨 화면/현장인지 판단하고, 블로그 소제목 중 어디에 넣을지 정해. 사진에 없는 내용을 사진 설명으로 지어내지 마.
+5. 사진에 사람 얼굴, 실제 고객명·전화번호, 상호가 보이면 privacy_risks에 적어.
+6. 인스타 카드뉴스는 정확히 5장, headline {HEAD_LIMIT}자 이내, sub {SUB_LIMIT}자 이내(공백 포함).
+7. 블로그 본문은 사용 후기 형식으로, 소제목 본문을 합쳐 {g.get('블로그_최소글자', 1500)}자 이상.
+8. 하단 홈페이지·문의 정보는 앱이 자동으로 붙이니 쓰지 마.
 
 아래 JSON 형식으로만 답해:
 {{
-  "scene": {{"environment": "설치 환경 한 줄", "visible_items": ["사진에 보이는 장비"], "pain_point": "이 현장의 고충 추정 한 줄"}},
-  "points": [{{"product": "제품명", "point": "차별점 요약", "evidence": "시트 원문 그대로", "why": "이 현장에 맞는 이유"}}],
+  "photos": [{{"index": 1, "what": "사진 속 화면/현장", "section": "넣을 소제목", "caption": "사진 아래 설명 한 줄"}}],
+  "points": [{{"point": "기술 차별점 한 줄", "fact_ids": ["F1"], "why": "이 현장·타겟에 중요한 이유"}}],
+  "blog": {{
+    "title": "블로그 제목",
+    "first_paragraph": "첫 문단",
+    "sections": [{{"heading": "소제목", "body": "본문", "photo_index": 1, "fact_ids": ["F1"]}}],
+    "conclusion": "결론 문단"
+  }},
+  "mission_coverage": [{{"mission": 1, "section": "반영한 소제목"}}],
   "instagram": [{{"headline": "", "sub": ""}}],
   "instagram_caption": "피드 본문",
-  "hashtags": ["#..."],
-  "blog": {{"title": "", "body": "마크다운 본문"}},
-  "privacy_risks": ["..."]
+  "instagram_hashtags": ["#..."],
+  "privacy_risks": []
 }}"""
 
 
-def call_gemini(api_key, model, image_bytes, mime, prompt):
+def call_gemini(api_key, model, images, prompt):
     from google import genai
     from google.genai import types
 
     client = genai.Client(api_key=api_key)
+    parts = [types.Part.from_bytes(data=b, mime_type=m) for b, m in images] + [prompt]
     resp = client.models.generate_content(
         model=model,
-        contents=[types.Part.from_bytes(data=image_bytes, mime_type=mime), prompt],
+        contents=parts,
         config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.4),
     )
-    return json.loads(resp.text)
+    text = re.sub(r"^```(?:json)?|```$", "", resp.text.strip()).strip()
+    return json.loads(text)
 
 
-def to_markdown(r):
-    md = [f"# 현장 홍보 콘텐츠 초안\n", f"**현장 분석**: {r['scene'].get('environment','')}\n"]
-    md.append("## 인스타그램 카드뉴스")
-    for i, s in enumerate(r.get("instagram", []), 1):
-        md.append(f"{i}. **{s.get('headline','')}** — {s.get('sub','')}")
-    md.append(f"\n{r.get('instagram_caption','')}\n\n{' '.join(r.get('hashtags', []))}\n")
-    md.append(f"## 블로그\n### {r['blog'].get('title','')}\n\n{r['blog'].get('body','')}")
-    return "\n".join(md)
+# ---------------------------------------------------------------- 자동 검수 (AI 결과를 그대로 믿지 않음)
+def plain(md):
+    """마크다운 기호를 뺀 실제 글자."""
+    md = re.sub(r"[#*_>`|\-]+", " ", md or "")
+    return re.sub(r"\s+", " ", md).strip()
 
 
-# ---------- 화면 ----------
-def main():
-    st.set_page_config(page_title="티링크 AI 현장사진 홍보콘텐츠 자동생성기", layout="wide")
-    st.title("📸 티링크 AI 현장사진 홍보콘텐츠 자동생성기")
-    st.caption("현장 사진 한 장 + 제품 정보 시트 → 블로그·인스타 초안과 검수 체크리스트")
+def blog_text(blog):
+    secs = "\n".join(f"{s.get('heading','')}\n{s.get('body','')}" for s in blog.get("sections", []))
+    return "\n".join([blog.get("first_paragraph", ""), secs, blog.get("conclusion", "")])
 
-    with st.sidebar:
-        st.header("설정")
-        api_key = st.text_input("Gemini API 키", value=os.getenv("GEMINI_API_KEY", ""), type="password")
-        model = st.text_input("모델명", value=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
-                              help="Google AI Studio에서 사용 가능한 모델명으로 바꾸세요.")
-        st.divider()
-        st.write("제품 정보 시트:", SHEET_PATH.name)
 
-    rows = load_products()
-    names = [r["제품명"] for r in rows]
+def numbers_in(text):
+    text = re.sub(r"(?m)^\s*\d+[.)]\s", " ", text)  # 목록 번호 제외
+    text = re.sub(r"\[F\d+\]|F\d+", " ", text)  # 근거 ID 제외
+    return set(re.findall(r"\d[\d,.]*\d|\d", text))
 
-    col1, col2 = st.columns([1, 1])
-    with col1:
-        photo = st.file_uploader("① 현장 사진 업로드", type=["jpg", "jpeg", "png"])
-        if photo:
-            st.image(photo, use_container_width=True)
-    with col2:
-        chosen = st.multiselect("② 설치 제품 선택", names, default=names[:1])
-        memo = st.text_area("③ 현장 메모 (선택)", placeholder="예) 공장 사무동 단자함, 공간 협소")
-        run = st.button("🚀 콘텐츠 생성", type="primary", disabled=not (photo and chosen and api_key))
-        if not api_key:
-            st.info("왼쪽에 Gemini API 키를 입력하세요.")
 
-    if not run:
-        return
+def audit(result, g, facts):
+    blog = result.get("blog", {})
+    title, first = blog.get("title", ""), blog.get("first_paragraph", "")
+    body = blog_text(blog)
+    fact_ids = {f["id"] for f in facts}
+    source_text = facts_block(facts) + json.dumps(g, ensure_ascii=False)
+    checks = []
 
-    selected = [r for r in rows if r["제품명"] in chosen]
-    source = sheet_text(selected)
-    with st.spinner("사진 분석 → 차별점 매칭 → 콘텐츠 생성 중..."):
-        try:
-            result = call_gemini(api_key, model, photo.getvalue(), photo.type, build_prompt(chosen, source, memo))
-        except Exception as e:  # 시연 중 오류도 화면에 보이게
-            st.error(f"생성 실패: {e}")
-            return
+    def add(ok, label, detail=""):
+        checks.append({"ok": ok, "label": label, "detail": detail})
 
-    points = check_evidence(result.get("points", []), source)
-    slides = result.get("instagram", [])
-    blog = result.get("blog", {"title": "", "body": ""})
-    length_issues = check_lengths(slides, blog.get("title", ""))
+    # 1. 근거 ID
+    used = [fid for p in result.get("points", []) for fid in p.get("fact_ids", [])]
+    used += [fid for s in blog.get("sections", []) for fid in s.get("fact_ids", [])]
+    bad = sorted(set(used) - fact_ids)
+    add(bool(used) and not bad, f"근거 ID {len(set(used)) - len(bad)}개 확인", f"없는 ID: {', '.join(bad)}" if bad else "")
+
+    # 2. 출처 없는 숫자
+    src_nums = numbers_in(source_text)
+    orphan = sorted(n for n in numbers_in(title + "\n" + body) if n not in src_nums)
+    add(not orphan, "모든 숫자가 제품 정보에 있음", f"출처 없는 숫자: {', '.join(orphan)}" if orphan else "")
+
+    # 3. 필수 키워드
+    miss_t = [k for k in g["필수키워드"] if k not in title]
+    miss_b = [k for k in g["필수키워드"] if k not in body]
+    add(not miss_b, "필수 키워드 본문 포함", f"본문 누락: {', '.join(miss_b)}" if miss_b else "")
+    add(not miss_t, "필수 키워드 제목 포함", f"제목 누락: {', '.join(miss_t)}" if miss_t else "")
+
+    # 4. 제목·첫 문단 키워드
+    miss_f = [k for k in g["제목_첫문단_키워드"] if k not in title + first]
+    add(not miss_f, "제목·첫 문단 지정 키워드 포함", f"누락: {', '.join(miss_f)}" if miss_f else "")
+
+    # 5. 분량
+    n = len(plain(body))
+    need = g.get("블로그_최소글자", 1500)
+    add(n >= need, f"블로그 본문 {n:,}자 (기준 {need:,}자 이상, 기호 제외)")
+
+    # 6. 금지어·확인 필요 정보
     all_text = json.dumps(result, ensure_ascii=False)
-    placeholder_count = all_text.count(PLACEHOLDER)
+    banned = [w for w in g["사용금지"] if w in all_text]
+    add(not banned, "사용 금지 단어 없음", f"발견: {', '.join(banned)}" if banned else "")
+    for c in g.get("확인필요_충돌", []):
+        hit = c["패턴"] in all_text
+        add(not hit, f"'{c['내용']}' 미사용", c["이유"] if hit else "")
+
+    # 7. 추천 구성 / 미션
+    heads = " ".join(s.get("heading", "") for s in blog.get("sections", []))
+    miss_sec = [s for s in g["추천구성"] if s.replace("·", " ").split()[0] not in heads]  # 첫 단어로 대조
+    add(not miss_sec, f"추천 본문 구성 {len(g['추천구성']) - len(miss_sec)}/{len(g['추천구성'])}", ", ".join(miss_sec))
+    covered = {m.get("mission") for m in result.get("mission_coverage", [])}
+    add(len(covered) >= len(g["미션"]), f"리뷰 미션 반영 {len(covered)}/{len(g['미션'])} (AI 자가 보고)")
+
+    # 8. 인스타
+    slides = result.get("instagram", [])
+    over = [f"{i}장" for i, s in enumerate(slides, 1)
+            if len(s.get("headline", "")) > HEAD_LIMIT or len(s.get("sub", "")) > SUB_LIMIT]
+    add(len(slides) == 5 and not over, f"카드뉴스 {len(slides)}장 · 글자 수 제한", f"초과: {', '.join(over)}" if over else "")
+    bad_tags = [t for t in result.get("instagram_hashtags", []) if t not in g["태그"]]
+    add(not bad_tags, "해시태그가 가이드라인 태그 안에서 선택됨", f"목록 밖: {', '.join(bad_tags)}" if bad_tags else "")
+
+    # 9. 확인 필요
+    ph = all_text.count("[확인 필요]")
+    add(ph == 0, f"[확인 필요] {ph}곳", "게시 전 업체 확인 후 채우기" if ph else "")
+    return checks
+
+
+def final_blog_markdown(result, g, photo_names):
+    b = result["blog"]
+    out = [f"# {b.get('title','')}", "", b.get("first_paragraph", ""), ""]
+    caps = {p.get("index"): p.get("caption", "") for p in result.get("photos", [])}
+    for s in b.get("sections", []):
+        out += [f"## {s.get('heading','')}", ""]
+        idx = s.get("photo_index")
+        if isinstance(idx, int) and 1 <= idx <= len(photo_names):
+            out += [f"[사진 {idx}: {photo_names[idx-1]}] {caps.get(idx,'')}", ""]
+        out += [s.get("body", ""), ""]
+    out += [b.get("conclusion", ""), "", "---", g["하단정보"], "", " ".join(g["태그"])]
+    return "\n".join(out)
+
+
+# ---------------------------------------------------------------- 화면
+def get_secret(name):
+    try:
+        return st.secrets.get(name, "")
+    except Exception:
+        return os.getenv(name, "")
+
+
+def main():
+    st.set_page_config(page_title="티링크 AI 현장사진 홍보콘텐츠 자동생성기", page_icon="📸", layout="wide")
+    st.title("📸 티링크 AI 현장사진 홍보콘텐츠 자동생성기")
+    st.caption("현장 사진 + 제품 정보 + 업체 리뷰 가이드라인 → 가이드라인을 지킨 블로그·인스타 초안과 자동 검수 결과")
+
+    # ---- 설정 / 데이터
+    with st.sidebar:
+        st.header("⚙️ 설정")
+        secret_key = get_secret("GEMINI_API_KEY")
+        api_key = secret_key or st.text_input("Gemini API 키", type="password")
+        if secret_key:
+            st.success("API 키 연결됨")
+        model = st.text_input("모델", value=get_secret("GEMINI_MODEL") or "gemini-2.5-flash")
+        st.divider()
+        st.subheader("📂 다른 업체·제품에 쓰기")
+        up_g = st.file_uploader("가이드라인 (guideline.json)", type=["json"])
+        up_f = st.file_uploader("제품 정보 (facts.csv)", type=["csv"])
+
+    g = json.loads(up_g.getvalue().decode("utf-8")) if up_g else default_guideline()
+    facts = read_facts(up_f.getvalue().decode("utf-8-sig")) if up_f else default_facts()
+
+    with st.expander(f"📑 근거 데이터 보기 — 제품 정보 {len(facts)}건 · 가이드라인 '{g['제품명']}'"):
+        st.dataframe([{k: f[k] for k in ("id", "제품", "사실", "출처")} for f in facts], hide_index=True)
+        st.write("**필수 키워드**", ", ".join(g["필수키워드"]))
+        st.write("**제목·첫 문단 키워드**", ", ".join(g["제목_첫문단_키워드"]))
+        for c in g.get("확인필요_충돌", []):
+            st.warning(f"확인 필요: {c['내용']} — {c['이유']}")
+
+    # ---- 입력
+    c1, c2 = st.columns([3, 2])
+    with c1:
+        use_sample = st.toggle("샘플 사진으로 시연하기", value=False)
+        if use_sample:
+            files = sorted((BASE / "samples").glob("*.jpg"))
+            images = [(p.read_bytes(), "image/jpeg") for p in files]
+            names = [p.stem for p in files]
+        else:
+            ups = st.file_uploader(f"① 현장 사진 (최대 {MAX_PHOTOS}장)", type=["jpg", "jpeg", "png"],
+                                   accept_multiple_files=True)
+            ups = (ups or [])[:MAX_PHOTOS]
+            images = [(u.getvalue(), u.type) for u in ups]
+            names = [Path(u.name).stem for u in ups]
+        if images:
+            cols = st.columns(len(images))
+            for col, (b, _), nm in zip(cols, images, names):
+                col.image(b, caption=nm)
+    with c2:
+        memo = st.text_area("② 현장 메모 (선택)", height=120,
+                            placeholder="예) 외근 영업 10명 회사, 휴대폰·인터넷전화 통화를 따로 관리하던 곳")
+        st.caption("⚠️ 실제 고객 정보가 담긴 사진은 올리지 마세요. 무료 API는 입력이 서비스 개선에 쓰일 수 있습니다.")
+        run = st.button("🚀 콘텐츠 생성", type="primary", use_container_width=True,
+                        disabled=not (images and api_key))
+        if not api_key:
+            st.info("왼쪽 설정에 Gemini API 키를 넣으세요.")
+
+    if run:
+        with st.spinner("사진 분석 → 차별점 매칭 → 블로그·인스타 작성 → 자동 검수 중..."):
+            try:
+                result = call_gemini(api_key, model, images, build_prompt(g, facts, memo, len(images)))
+                st.session_state["out"] = {"result": result, "names": names, "images": images}
+            except Exception as e:
+                msg = str(e)
+                if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+                    st.error("무료 사용량을 잠시 초과했어요. 1분 뒤 다시 눌러 주세요.")
+                else:
+                    st.error(f"생성 실패: {msg}")
+                return
+
+    out = st.session_state.get("out")
+    if not out:
+        return
+    result, names, images = out["result"], out["names"], out["images"]
+    checks = audit(result, g, facts)
+    fmap = {f["id"]: f for f in facts}
 
     st.divider()
-    st.subheader("1. 현장 사진 분석")
-    sc = result.get("scene", {})
-    st.write(f"**설치 환경**: {sc.get('environment','')}")
-    st.write(f"**보이는 장비**: {', '.join(sc.get('visible_items', []))}")
-    st.write(f"**현장 고충(추정)**: {sc.get('pain_point','')}")
+    passed = sum(c["ok"] for c in checks)
+    st.subheader(f"✅ 자동 검수 {passed}/{len(checks)} 통과")
+    for c in checks:
+        st.write(("✅ " if c["ok"] else "⚠️ ") + c["label"] + (f" — {c['detail']}" if c["detail"] else ""))
+    for r in result.get("privacy_risks", []):
+        st.write(f"🔒 개인정보 확인: {r}")
 
-    st.subheader("2. 기술 차별점 매칭")
-    for p in points:
-        badge = "✅ 시트 근거 확인" if p["verified"] else "⚠️ 시트에 없는 근거 — 사용 금지"
-        with st.container(border=True):
-            st.markdown(f"**{p.get('product','')} · {p.get('point','')}**  \n{badge}")
-            st.caption(f"근거: {p.get('evidence','')}")
-            st.write(p.get("why", ""))
-
-    tab1, tab2 = st.tabs(["📱 인스타그램", "📝 블로그"])
-    with tab1:
-        st.table([{"장": i, "헤드카피": s.get("headline", ""), "글자": len(s.get("headline", "")),
-                   "서브카피": s.get("sub", ""), "글자 ": len(s.get("sub", ""))} for i, s in enumerate(slides, 1)])
+    t1, t2, t3, t4 = st.tabs(["🔍 사진 분석·차별점", "📝 블로그 미리보기", "📱 인스타그램", "⬇️ 내보내기"])
+    with t1:
+        for p in result.get("photos", []):
+            st.write(f"**사진 {p.get('index')}** {p.get('what','')} → *{p.get('section','')}*")
+        st.markdown("#### 기술 차별점")
+        for p in result.get("points", []):
+            with st.container(border=True):
+                st.markdown(f"**{p.get('point','')}**")
+                st.write(p.get("why", ""))
+                for fid in p.get("fact_ids", []):
+                    f = fmap.get(fid)
+                    st.caption(f"✅ {fid} {f['사실']} — {f['출처']}" if f else f"⚠️ {fid}: 제품 정보에 없는 근거")
+    with t2:
+        b = result.get("blog", {})
+        caps = {p.get("index"): p.get("caption", "") for p in result.get("photos", [])}
+        st.markdown(f"## {b.get('title','')}")
+        st.write(b.get("first_paragraph", ""))
+        for s in b.get("sections", []):
+            st.markdown(f"### {s.get('heading','')}")
+            idx = s.get("photo_index")
+            if isinstance(idx, int) and 1 <= idx <= len(images):
+                st.image(images[idx - 1][0], caption=caps.get(idx, ""))
+            st.write(s.get("body", ""))
+            if s.get("fact_ids"):
+                st.caption("근거: " + ", ".join(s["fact_ids"]))
+        st.write(b.get("conclusion", ""))
+        st.divider()
+        st.text(g["하단정보"])
+        st.caption(" ".join(g["태그"]))
+    with t3:
+        slides = result.get("instagram", [])
+        st.dataframe([{"장": i, "헤드카피": s.get("headline", ""), "글자": len(s.get("headline", "")),
+                       "서브카피": s.get("sub", ""), "글자수": len(s.get("sub", ""))}
+                      for i, s in enumerate(slides, 1)], hide_index=True)
         st.write(result.get("instagram_caption", ""))
-        st.write(" ".join(result.get("hashtags", [])))
-    with tab2:
-        st.markdown(f"### {blog.get('title','')} ({len(blog.get('title',''))}자)")
-        st.markdown(blog.get("body", ""))
-
-    st.subheader("3. 검수 체크리스트")
-    unverified = [p for p in points if not p["verified"]]
-    checks = {
-        f"차별점 근거 {len(points) - len(unverified)}/{len(points)}건 시트와 일치": not unverified,
-        f"글자 수 제한 {'통과' if not length_issues else '초과: ' + ', '.join(length_issues)}": not length_issues,
-        f"카드뉴스 {len(slides)}장 (5장 필요)": len(slides) == 5,
-        f"미확인 정보 {placeholder_count}곳 [확인 필요] 표시 — 게시 전 채우기": placeholder_count == 0,
-    }
-    for label, ok in checks.items():
-        st.write(("✅ " if ok else "⚠️ ") + label)
-    for risk in result.get("privacy_risks", []):
-        st.write(f"🔒 개인정보 확인: {risk}")
-
-    st.download_button("⬇️ 초안 다운로드 (.md)", to_markdown(result), file_name="tlink_content.md")
+        st.write(" ".join(result.get("instagram_hashtags", [])))
+    with t4:
+        md = final_blog_markdown(result, g, names)
+        st.download_button("블로그 원고 (.md)", md, file_name="tlink_blog.md")
+        st.download_button("전체 결과 (.json)", json.dumps(result, ensure_ascii=False, indent=2),
+                           file_name="tlink_result.json")
+        st.code(md, language="markdown")
 
 
 if __name__ == "__main__":
