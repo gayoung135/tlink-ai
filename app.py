@@ -211,6 +211,59 @@ def final_blog_markdown(result, g, photo_names):
 
 
 # ---------------------------------------------------------------- 화면
+BRAND = "#1F3FE5"
+
+CSS = f"""
+<style>
+@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css');
+html, body, [class*="css"], .stMarkdown, button, input, textarea {{
+  font-family: 'Pretendard', -apple-system, 'Malgun Gothic', sans-serif !important;
+}}
+[data-testid="stToolbar"], [data-testid="stDecoration"], footer {{ display: none !important; }}
+.block-container {{ max-width: 1080px; padding-top: 2.2rem; padding-bottom: 4rem; }}
+.brandbar {{ display:flex; align-items:center; gap:10px; font-size:13px; color:#6B7280; letter-spacing:.02em; }}
+.brandbar b {{ color:{BRAND}; font-size:15px; letter-spacing:.06em; }}
+.hero h1 {{ font-size:30px; font-weight:800; margin:.4rem 0 .3rem; color:#0F172A; letter-spacing:-.02em; }}
+.hero p {{ color:#4B5563; font-size:15.5px; margin:0 0 1.2rem; }}
+.flow {{ display:flex; gap:8px; margin: 0 0 1.6rem; flex-wrap:wrap; }}
+.flow span {{ font-size:13px; padding:6px 12px; border-radius:999px; background:#F1F4FB; color:#374151; }}
+.flow span b {{ color:{BRAND}; margin-right:6px; }}
+.step {{ font-size:12px; font-weight:700; color:{BRAND}; letter-spacing:.08em; margin:0; }}
+.step-title {{ font-size:19px; font-weight:700; color:#111827; margin:.15rem 0 .2rem; }}
+.step-desc {{ font-size:14px; color:#6B7280; margin:0 0 .8rem; }}
+.badge {{ display:inline-block; font-size:12px; font-weight:700; padding:2px 9px; border-radius:6px; margin-right:8px; min-width:58px; text-align:center; }}
+.ok {{ background:#E8F5EE; color:#167A47; }}
+.ng {{ background:#FDF1E3; color:#B45309; }}
+.chk {{ padding:9px 2px; border-bottom:1px solid #EEF0F4; font-size:14.5px; color:#1F2937; }}
+.chk small {{ color:#6B7280; margin-left:6px; }}
+.src {{ font-size:13px; color:#6B7280; padding:3px 0; }}
+.src b {{ color:{BRAND}; font-weight:600; margin-right:4px; }}
+.warn {{ font-size:13px; color:#B45309; padding:3px 0; }}
+.note {{ font-size:13px; color:#6B7280; }}
+div.stButton > button[kind="primary"] {{ height:52px; font-size:16px; font-weight:700; border-radius:10px; }}
+</style>
+"""
+
+
+def esc(t):
+    import html
+    return html.escape(str(t or ""))
+
+
+def step_header(no, title, desc):
+    st.markdown(f'<p class="step">STEP {no}</p><p class="step-title">{esc(title)}</p>'
+                f'<p class="step-desc">{esc(desc)}</p>', unsafe_allow_html=True)
+
+
+def render_checks(checks):
+    rows = []
+    for c in checks:
+        cls, word = ("ok", "통과") if c["ok"] else ("ng", "확인 필요")
+        detail = f"<small>{esc(c['detail'])}</small>" if c["detail"] else ""
+        rows.append(f'<div class="chk"><span class="badge {cls}">{word}</span>{esc(c["label"])}{detail}</div>')
+    st.markdown("".join(rows), unsafe_allow_html=True)
+
+
 def get_secret(name):
     try:
         return st.secrets.get(name, "")
@@ -219,129 +272,174 @@ def get_secret(name):
 
 
 def main():
-    st.set_page_config(page_title="티링크 AI 현장사진 홍보콘텐츠 자동생성기", page_icon="📸", layout="wide")
-    st.title("📸 티링크 AI 현장사진 홍보콘텐츠 자동생성기")
-    st.caption("현장 사진 + 제품 정보 + 업체 리뷰 가이드라인 → 가이드라인을 지킨 블로그·인스타 초안과 자동 검수 결과")
+    import time
 
-    # ---- 설정 / 데이터
-    with st.sidebar:
-        st.header("⚙️ 설정")
-        secret_key = get_secret("GEMINI_API_KEY")
-        api_key = secret_key or st.text_input("Gemini API 키", type="password")
-        if secret_key:
-            st.success("API 키 연결됨")
-        model = st.text_input("모델", value=get_secret("GEMINI_MODEL") or "gemini-2.5-flash")
-        st.divider()
-        st.subheader("📂 다른 업체·제품에 쓰기")
-        up_g = st.file_uploader("가이드라인 (guideline.json)", type=["json"])
-        up_f = st.file_uploader("제품 정보 (facts.csv)", type=["csv"])
+    st.set_page_config(page_title="TLINK 현장사진 홍보콘텐츠 생성기", layout="centered",
+                       initial_sidebar_state="collapsed")
+    st.markdown(CSS, unsafe_allow_html=True)
 
-    g = json.loads(up_g.getvalue().decode("utf-8")) if up_g else default_guideline()
-    facts = read_facts(up_f.getvalue().decode("utf-8-sig")) if up_f else default_facts()
+    # ---- 헤더
+    st.markdown(
+        '<div class="brandbar"><b>T·LINK</b> 마케팅 콘텐츠 자동화</div>'
+        '<div class="hero"><h1>현장사진 홍보콘텐츠 생성기</h1>'
+        '<p>현장 사진을 올리면 티링크 제품 자료와 리뷰 가이드라인을 근거로 블로그 리뷰와 인스타그램 카드뉴스를 만들고, 게시 전 검수까지 끝냅니다.</p></div>'
+        '<div class="flow"><span><b>1</b>사진 선택</span><span><b>2</b>현장 정보 입력</span>'
+        '<span><b>3</b>생성</span><span><b>4</b>검수 결과 확인 후 복사</span></div>',
+        unsafe_allow_html=True)
 
-    with st.expander(f"📑 근거 데이터 보기 — 제품 정보 {len(facts)}건 · 가이드라인 '{g['제품명']}'"):
-        st.dataframe([{k: f[k] for k in ("id", "제품", "사실", "출처")} for f in facts], hide_index=True)
-        st.write("**필수 키워드**", ", ".join(g["필수키워드"]))
-        st.write("**제목·첫 문단 키워드**", ", ".join(g["제목_첫문단_키워드"]))
-        for c in g.get("확인필요_충돌", []):
-            st.warning(f"확인 필요: {c['내용']} — {c['이유']}")
+    # ---- 고급 설정 값 (맨 아래 펼침 메뉴에서 바꿈)
+    api_key = get_secret("GEMINI_API_KEY") or st.session_state.get("api_key_input", "")
+    model = st.session_state.get("model_input") or get_secret("GEMINI_MODEL") or "gemini-2.5-flash"
+    g = st.session_state.get("guideline") or default_guideline()
+    facts = st.session_state.get("facts") or default_facts()
 
-    # ---- 입력
-    c1, c2 = st.columns([3, 2])
-    with c1:
-        use_sample = st.toggle("샘플 사진으로 시연하기", value=False)
-        if use_sample:
+    # ---- STEP 1
+    with st.container(border=True):
+        step_header(1, "현장 사진 선택", "시공·사용 현장이나 제품 화면 사진을 최대 5장까지 올립니다. 처음이라면 샘플 사진으로 바로 시험해 보세요.")
+        mode = st.radio("사진 선택 방식", ["샘플 사진 사용 (티링크 제품 화면 5장)", "직접 사진 올리기"],
+                        horizontal=True, label_visibility="collapsed")
+        if mode.startswith("샘플"):
             files = sorted((BASE / "samples").glob("*.jpg"))
             images = [(p.read_bytes(), "image/jpeg") for p in files]
             names = [SAMPLE_LABELS.get(p.stem, p.stem) for p in files]
         else:
-            ups = st.file_uploader(f"① 현장 사진 (최대 {MAX_PHOTOS}장)", type=["jpg", "jpeg", "png"],
-                                   accept_multiple_files=True)
+            ups = st.file_uploader("JPG, PNG 파일", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
             ups = (ups or [])[:MAX_PHOTOS]
             images = [(u.getvalue(), u.type) for u in ups]
             names = [Path(u.name).stem for u in ups]
+            st.markdown('<p class="note">실제 고객 이름·전화번호·얼굴이 보이는 사진은 올리지 마세요.</p>',
+                        unsafe_allow_html=True)
         if images:
             cols = st.columns(len(images))
             for col, (b, _), nm in zip(cols, images, names):
                 col.image(b, caption=nm)
-    with c2:
-        memo = st.text_area("② 현장 메모 (선택)", height=120,
-                            placeholder="예) 외근 영업 10명 회사, 휴대폰·인터넷전화 통화를 따로 관리하던 곳")
-        st.caption("⚠️ 실제 고객 정보가 담긴 사진은 올리지 마세요. 무료 API는 입력이 서비스 개선에 쓰일 수 있습니다.")
-        run = st.button("🚀 콘텐츠 생성", type="primary", use_container_width=True,
+
+    # ---- STEP 2
+    with st.container(border=True):
+        step_header(2, "현장 정보 입력 (선택)", "어떤 고객의 어떤 문제를 해결한 현장인지 한두 줄로 적으면 내용이 더 구체적으로 나옵니다.")
+        memo = st.text_area("현장 메모", height=90, label_visibility="collapsed",
+                            placeholder="예) 외근 영업사원 10명 회사. 휴대폰과 사무실 인터넷전화 통화를 따로 관리해 고객 이력이 흩어져 있었음")
+
+    # ---- STEP 3
+    with st.container(border=True):
+        step_header(3, "콘텐츠 생성", f"'{g['제품명']}' 리뷰 가이드라인과 제품 자료 {len(facts)}건만 근거로 작성합니다. 30초~1분 정도 걸립니다.")
+        run = st.button("블로그·인스타그램 콘텐츠 생성하기", type="primary", use_container_width=True,
                         disabled=not (images and api_key))
-        if not api_key:
-            st.info("왼쪽 설정에 Gemini API 키를 넣으세요.")
+        if not images:
+            st.markdown('<p class="note">STEP 1에서 사진을 먼저 선택하세요.</p>', unsafe_allow_html=True)
+        elif not api_key:
+            st.markdown('<p class="warn">API 키가 설정되지 않았습니다. 페이지 아래 고급 설정에서 입력하세요.</p>',
+                        unsafe_allow_html=True)
 
     if run:
-        with st.spinner("사진 분석 → 차별점 매칭 → 블로그·인스타 작성 → 자동 검수 중..."):
+        t0 = time.time()
+        with st.spinner("사진 분석 → 제품 차별점 연결 → 원고 작성 → 검수 중입니다"):
             try:
                 result = call_gemini(api_key, model, images, build_prompt(g, facts, memo, len(images)))
-                st.session_state["out"] = {"result": result, "names": names, "images": images}
+                st.session_state["out"] = {"result": result, "names": names, "images": images,
+                                           "sec": round(time.time() - t0)}
             except Exception as e:
                 msg = str(e)
                 if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
-                    st.error("무료 사용량을 잠시 초과했어요. 1분 뒤 다시 눌러 주세요.")
+                    st.error("무료 사용량을 잠시 초과했습니다. 1분 뒤 다시 시도해 주세요.")
                 else:
-                    st.error(f"생성 실패: {msg}")
-                return
+                    st.error(f"생성에 실패했습니다: {msg}")
 
     out = st.session_state.get("out")
-    if not out:
-        return
+    if out:
+        render_result(out, g, facts)
+
+    # ---- 맨 아래: 근거 데이터 / 고급 설정
+    st.write("")
+    with st.expander("근거 데이터 보기 (제품 자료 · 리뷰 가이드라인)"):
+        st.dataframe([{k: f[k] for k in ("id", "제품", "사실", "출처")} for f in facts], hide_index=True)
+        st.markdown(f"**필수 키워드** {esc(', '.join(g['필수키워드']))}  \n"
+                    f"**제목·첫 문단 키워드** {esc(', '.join(g['제목_첫문단_키워드']))}")
+        for c in g.get("확인필요_충돌", []):
+            st.markdown(f'<p class="warn">사용 보류: {esc(c["내용"])} — {esc(c["이유"])}</p>', unsafe_allow_html=True)
+    with st.expander("고급 설정 · 다른 제품에 적용"):
+        if not get_secret("GEMINI_API_KEY"):
+            st.text_input("Gemini API 키", type="password", key="api_key_input")
+        st.text_input("모델", value=model, key="model_input")
+        up_g = st.file_uploader("리뷰 가이드라인 파일 (guideline.json)", type=["json"])
+        up_f = st.file_uploader("제품 자료 파일 (facts.csv)", type=["csv"])
+        if up_g:
+            st.session_state["guideline"] = json.loads(up_g.getvalue().decode("utf-8"))
+        if up_f:
+            st.session_state["facts"] = read_facts(up_f.getvalue().decode("utf-8-sig"))
+        st.markdown('<p class="note">같은 형식의 파일로 바꾸면 다른 제품·업체의 홍보 콘텐츠도 같은 방식으로 만들 수 있습니다.</p>',
+                    unsafe_allow_html=True)
+
+
+def render_result(out, g, facts):
     result, names, images = out["result"], out["names"], out["images"]
     checks = audit(result, g, facts)
     fmap = {f["id"]: f for f in facts}
-
-    st.divider()
+    b = result.get("blog", {})
     passed = sum(c["ok"] for c in checks)
-    st.subheader(f"✅ 자동 검수 {passed}/{len(checks)} 통과")
-    for c in checks:
-        st.write(("✅ " if c["ok"] else "⚠️ ") + c["label"] + (f" — {c['detail']}" if c["detail"] else ""))
-    for r in result.get("privacy_risks", []):
-        st.write(f"🔒 개인정보 확인: {r}")
+    ph = json.dumps(result, ensure_ascii=False).count("[확인 필요]")
 
-    t1, t2, t3, t4 = st.tabs(["🔍 사진 분석·차별점", "📝 블로그 미리보기", "📱 인스타그램", "⬇️ 내보내기"])
+    st.write("")
+    st.markdown('<p class="step">RESULT</p><p class="step-title">생성 결과</p>', unsafe_allow_html=True)
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("자동 검수", f"{passed} / {len(checks)}")
+    m2.metric("블로그 본문", f"{len(plain(blog_text(b))):,}자")
+    m3.metric("확인 필요 항목", f"{ph}곳")
+    m4.metric("소요 시간", f"{out.get('sec', '-')}초")
+
+    t1, t2, t3, t4, t5 = st.tabs(["블로그 원고", "인스타그램", "사진 분석 · 근거", "검수 상세", "내보내기"])
+    caps = {p.get("index"): p.get("caption", "") for p in result.get("photos", [])}
     with t1:
-        for p in result.get("photos", []):
-            st.write(f"**사진 {p.get('index')}** {p.get('what','')} → *{p.get('section','')}*")
-        st.markdown("#### 기술 차별점")
-        for p in result.get("points", []):
-            with st.container(border=True):
-                st.markdown(f"**{p.get('point','')}**")
-                st.write(p.get("why", ""))
-                for fid in p.get("fact_ids", []):
-                    f = fmap.get(fid)
-                    st.caption(f"✅ {fid} {f['사실']} — {f['출처']}" if f else f"⚠️ {fid}: 제품 정보에 없는 근거")
-    with t2:
-        b = result.get("blog", {})
-        caps = {p.get("index"): p.get("caption", "") for p in result.get("photos", [])}
-        st.markdown(f"## {b.get('title','')}")
+        st.markdown(f"### {esc(b.get('title',''))}")
         st.write(b.get("first_paragraph", ""))
         for s in b.get("sections", []):
-            st.markdown(f"### {s.get('heading','')}")
+            st.markdown(f"#### {esc(s.get('heading',''))}")
             idx = s.get("photo_index")
             if isinstance(idx, int) and 1 <= idx <= len(images):
                 st.image(images[idx - 1][0], caption=caps.get(idx, ""))
             st.write(s.get("body", ""))
             if s.get("fact_ids"):
-                st.caption("근거: " + ", ".join(s["fact_ids"]))
+                st.markdown(f'<p class="src">근거 {esc(", ".join(s["fact_ids"]))}</p>', unsafe_allow_html=True)
         st.write(b.get("conclusion", ""))
         st.divider()
         st.text(g["하단정보"])
         st.caption(" ".join(g["태그"]))
-    with t3:
+    with t2:
         slides = result.get("instagram", [])
         st.dataframe([{"장": i, "헤드카피": s.get("headline", ""), "글자": len(s.get("headline", "")),
-                       "서브카피": s.get("sub", ""), "글자수": len(s.get("sub", ""))}
-                      for i, s in enumerate(slides, 1)], hide_index=True)
+                       "서브카피": s.get("sub", ""), "글자 수": len(s.get("sub", ""))}
+                      for i, s in enumerate(slides, 1)], hide_index=True, use_container_width=True)
+        st.markdown("**피드 본문**")
         st.write(result.get("instagram_caption", ""))
-        st.write(" ".join(result.get("instagram_hashtags", [])))
+        st.caption(" ".join(result.get("instagram_hashtags", [])))
+    with t3:
+        st.markdown("**사진별 분석**")
+        for p in result.get("photos", []):
+            nm = names[p["index"] - 1] if isinstance(p.get("index"), int) and 0 < p["index"] <= len(names) else ""
+            st.markdown(f"- 사진 {p.get('index')} ({esc(nm)}): {esc(p.get('what',''))} → *{esc(p.get('section',''))}*")
+        st.markdown("**기술 차별점과 근거**")
+        for p in result.get("points", []):
+            with st.container(border=True):
+                st.markdown(f"**{esc(p.get('point',''))}**")
+                st.write(p.get("why", ""))
+                for fid in p.get("fact_ids", []):
+                    f = fmap.get(fid)
+                    if f:
+                        st.markdown(f'<p class="src"><b>{fid}</b>{esc(f["사실"])} · {esc(f["출처"])}</p>',
+                                    unsafe_allow_html=True)
+                    else:
+                        st.markdown(f'<p class="warn">{esc(fid)}: 제품 자료에 없는 근거</p>', unsafe_allow_html=True)
     with t4:
+        render_checks(checks)
+        for r in result.get("privacy_risks", []):
+            st.markdown(f'<p class="warn">개인정보 확인: {esc(r)}</p>', unsafe_allow_html=True)
+    with t5:
         md = final_blog_markdown(result, g, names)
-        st.download_button("블로그 원고 (.md)", md, file_name="tlink_blog.md")
-        st.download_button("전체 결과 (.json)", json.dumps(result, ensure_ascii=False, indent=2),
-                           file_name="tlink_result.json")
+        c1, c2 = st.columns(2)
+        c1.download_button("블로그 원고 내려받기 (.md)", md, file_name="tlink_blog.md", use_container_width=True)
+        c2.download_button("전체 결과 내려받기 (.json)", json.dumps(result, ensure_ascii=False, indent=2),
+                           file_name="tlink_result.json", use_container_width=True)
+        st.caption("아래 원고를 복사해 블로그 편집기에 붙여넣고, [사진 n] 자리에 해당 사진을 넣으면 됩니다.")
         st.code(md, language="markdown")
 
 
