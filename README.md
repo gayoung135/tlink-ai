@@ -53,7 +53,7 @@ AI가 **사진 분석 → 기술 차별점 매칭 → 가이드라인을 지킨 
 5. **Advanced settings** → **Secrets** 칸에 아래를 붙여넣기:
    ```
    GEMINI_API_KEY = "복사한_키"
-   GEMINI_MODEL = "gemini-2.5-flash"
+   GEMINI_MODEL = "gemini-3.8-flash"
    ```
 6. **Deploy** → 1~3분 뒤 `https://tlink-ai-content.streamlit.app` 같은 주소가 열립니다.
 
