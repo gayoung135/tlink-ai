@@ -298,8 +298,6 @@ def main():
     key_problem = ""
     if api_key and not api_key.isascii():
         key_problem = "API 키에 한글 등 영문이 아닌 글자가 들어 있습니다. Secrets의 GEMINI_API_KEY 값을 AI Studio에서 복사한 키로 바꿔 주세요."
-    elif api_key and not api_key.startswith("AIza"):
-        key_problem = "API 키 형식이 올바르지 않습니다. AI Studio에서 발급한 키(AIza로 시작)를 넣어 주세요."
 
     # ---- STEP 1
     with st.container(border=True):
