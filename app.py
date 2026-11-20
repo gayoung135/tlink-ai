@@ -15,6 +15,13 @@ import streamlit as st
 BASE = Path(__file__).parent
 HEAD_LIMIT, SUB_LIMIT = 20, 45
 MAX_PHOTOS = 5
+SAMPLE_LABELS = {  # 파일명은 영문(윈도우 압축 해제 시 한글 깨짐 방지), 화면에는 한글로 표시
+    "01_dashboard": "경영 대시보드",
+    "02_consult": "상담 관리 화면",
+    "03_call_stt": "통화 상세·STT",
+    "04_ai_analysis": "AI 분석",
+    "05_kpi_sales": "핵심 지표·영업기회",
+}
 
 
 # ---------------------------------------------------------------- 데이터
@@ -246,7 +253,7 @@ def main():
         if use_sample:
             files = sorted((BASE / "samples").glob("*.jpg"))
             images = [(p.read_bytes(), "image/jpeg") for p in files]
-            names = [p.stem for p in files]
+            names = [SAMPLE_LABELS.get(p.stem, p.stem) for p in files]
         else:
             ups = st.file_uploader(f"① 현장 사진 (최대 {MAX_PHOTOS}장)", type=["jpg", "jpeg", "png"],
                                    accept_multiple_files=True)
