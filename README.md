@@ -6,6 +6,12 @@
 AI가 **사진 분석 → 기술 차별점 매칭 → 가이드라인을 지킨 네이버 블로그 리뷰 + 인스타그램 카드뉴스**를 만들고,
 **코드가 결과를 다시 검수**합니다.
 
+
+## 발표 자료 · 테스트 기록
+- 발표 자료: [`docs/presentation.pdf`](docs/presentation.pdf)
+- 테스트 기록: [`docs/test-results/`](docs/test-results/README.md) — 같은 조건으로 반복 생성한 실제 결과 JSON과 점검 점수 (9 → 13 → 14 / 15)
+- 데모: https://tlink-ai-gayoung.streamlit.app/?embed=true
+
 ## 무엇을 자동 검수하나 (할루시네이션 방지)
 | 검수 | 방법 |
 | :--- | :--- |
